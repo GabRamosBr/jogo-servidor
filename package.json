@@ -1,0 +1,15 @@
+{
+  "name": "jogo-servidor-render",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.5",
+    "openai": "^4.33.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
