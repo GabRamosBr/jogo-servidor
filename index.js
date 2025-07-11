@@ -3,22 +3,32 @@ const { Server } = require("socket.io");
 const { OpenAI } = require('openai');
 
 const server = http.createServer();
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  },
-});
-
+const io = new Server(server, { cors: { origin: "*" } });
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const TURN_DURATION = 30;
 const MAX_TURNS = 10;
 const colors = ["#E53935", "#1E88E5", "#43A047", "#FDD835", "#8E24AA", "#D81B60", "#F4511E", "#3949AB"];
+
 let players = {};
 let hostId = null;
 let gameState = { status: 'lobby' };
 let timerInterval = null;
+
+// --- NOVA FUNÇÃO PARA ENVIAR ESTADO DO LOBBY ---
+function broadcastLobbyState() {
+    const playersArray = Object.values(players);
+    // Envia uma mensagem personalizada para cada jogador
+    Object.keys(players).forEach(playerId => {
+        const socket = io.sockets.sockets.get(playerId);
+        if (socket) {
+            socket.emit('lobbyState', {
+                players: playersArray,
+                isHost: playerId === hostId // Envia true apenas se este jogador for o host
+            });
+        }
+    });
+}
 
 function resetGame() {
     const seedWords = ["Futuro", "Natureza", "Arte", "Sociedade", "Conhecimento", "Justiça"];
@@ -30,37 +40,25 @@ function resetGame() {
         isRoundActive: true, isEvaluating: false,
     };
 }
-
 function startTurnTimer() {
     gameState.timeLeft = TURN_DURATION;
     io.emit('timer', gameState.timeLeft);
     if(timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
-        if(gameState.timeLeft > 0) {
-            gameState.timeLeft--;
-            io.emit('timer', gameState.timeLeft);
-        }
+        if(gameState.timeLeft > 0) { gameState.timeLeft--; io.emit('timer', gameState.timeLeft); }
         if (gameState.timeLeft <= 0) {
             clearInterval(timerInterval);
-            if (!gameState.isEvaluating) {
-                evaluateRound();
-            }
+            if (!gameState.isEvaluating) { evaluateRound(); }
         }
     }, 1000);
 }
-
 async function evaluateRound() {
     if (gameState.isEvaluating) return;
-    gameState.isEvaluating = true;
-    gameState.isRoundActive = false;
-    clearInterval(timerInterval);
-    io.emit('gameState', gameState);
+    gameState.isEvaluating = true; gameState.isRoundActive = false;
+    clearInterval(timerInterval); io.emit('gameState', gameState);
     const lastTermInChain = gameState.chain[gameState.chain.length - 1].word;
     const guesses = Object.values(players).filter(p => p.submitted).map(p => ({ groupId: p.id, word: p.lastGuess }));
-    if (guesses.length === 0) {
-        io.emit('roundResult', "Ninguém jogou nesta rodada. Pulando...");
-        startNextTurn(); return;
-    }
+    if (guesses.length === 0) { io.emit('roundResult', "Ninguém jogou nesta rodada. Pulando..."); startNextTurn(); return; }
     try {
         const systemPrompt = `Você é um motor de análise semântica. Avalie a força da conexão entre um "termo-alvo" e "termos candidatos". Considere todas as formas de conexão. Retorne uma pontuação de 0 a 100. Responda APENAS com um objeto JSON válido com a chave "results", contendo um array de objetos com "word" e "score". Ex: {"results": [{"word": "Futuro", "score": 92}]}`;
         const userPrompt = `Alvo: "${lastTermInChain}". Candidatos: [${guesses.map(g => `"${g.word}"`).join(', ')}].`;
@@ -92,7 +90,6 @@ async function evaluateRound() {
         startNextTurn();
     }
 }
-
 function startNextTurn() {
     if (gameState.turn >= MAX_TURNS) {
         gameState.status = 'finished';
@@ -119,9 +116,19 @@ io.on('connection', (socket) => {
         socket.disconnect(); return;
     }
     if (!hostId) hostId = socket.id;
+
     players[socket.id] = { id: socket.id, name: socket.name, color: colors[Object.keys(players).length % colors.length], score: 0, submitted: false, lastGuess: null };
-    io.emit('lobbyState', { players: Object.values(players), hostId });
-    socket.on('startGame', () => { if (socket.id === hostId) { resetGame(); io.emit('gameState', gameState); startTurnTimer(); } });
+    
+    // Usa a nova função para avisar a todos sobre o lobby
+    broadcastLobbyState();
+
+    socket.on('startGame', () => {
+        if (socket.id === hostId) {
+            resetGame();
+            io.emit('gameState', gameState);
+            startTurnTimer();
+        }
+    });
     socket.on('submitGuess', (word) => {
         if (players[socket.id] && gameState.isRoundActive && !players[socket.id].submitted) {
             players[socket.id].lastGuess = word;
@@ -138,7 +145,8 @@ io.on('connection', (socket) => {
             if (socket.id === hostId) {
                 hostId = Object.keys(players)[0] || null;
             }
-            io.emit('lobbyState', { players: Object.values(players), hostId });
+            // Avisa a todos sobre a mudança no lobby
+            broadcastLobbyState();
         }
     });
 });
